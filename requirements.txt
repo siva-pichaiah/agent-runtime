@@ -1,7 +1,4 @@
-openai
 boto3
-gitpython
 requests
 PyJWT
-requests
 cryptography
