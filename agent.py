@@ -1,16 +1,24 @@
 import os
-import subprocess
 import json
+import time
+import subprocess
+from datetime import datetime, timezone
+
 import boto3
-from datetime import datetime
+import jwt
+import requests
 
 # ----------------------------
 # ENV VARS FROM ECS
 # ----------------------------
 SESSION_ID = os.environ["SESSION_ID"]
-REPO = os.environ["REPO"]
+REPO = os.environ["REPO"]  # accepts "owner/repo" or "https://github.com/owner/repo"
 PROMPT = os.environ["PROMPT"]
 S3_BUCKET = os.environ["S3_BUCKET"]
+
+GITHUB_APP_ID = os.environ["GITHUB_APP_ID"]
+GITHUB_INSTALLATION_ID = os.environ["GITHUB_INSTALLATION_ID"]
+GITHUB_APP_PRIVATE_KEY = os.environ["GITHUB_APP_PRIVATE_KEY"]
 
 # ----------------------------
 # AWS CLIENTS
@@ -19,10 +27,73 @@ s3 = boto3.client("s3")
 
 
 # ----------------------------
+# GITHUB APP AUTH
+# ----------------------------
+def normalize_repo(repo: str) -> str:
+    repo = repo.strip()
+
+    if repo.startswith("https://github.com/"):
+        repo = repo[len("https://github.com/") :]
+    elif repo.startswith("http://github.com/"):
+        repo = repo[len("http://github.com/") :]
+
+    repo = repo.removesuffix(".git")
+    return repo.lstrip("/")
+
+
+def create_github_jwt() -> str:
+    now = int(time.time())
+    payload = {
+        "iat": now - 60,
+        "exp": now + 600,
+        "iss": str(GITHUB_APP_ID),
+    }
+
+    token = jwt.encode(
+        payload,
+        GITHUB_APP_PRIVATE_KEY,
+        algorithm="RS256",
+    )
+
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+
+    return token
+
+
+def get_installation_token() -> str:
+    app_jwt = create_github_jwt()
+
+    url = (
+        f"https://api.github.com/app/installations/"
+        f"{GITHUB_INSTALLATION_ID}/access_tokens"
+    )
+
+    response = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {app_jwt}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    return response.json()["token"]
+
+
+def build_repo_url(repo: str) -> str:
+    repo_path = normalize_repo(repo)
+    token = get_installation_token()
+    return f"https://x-access-token:{token}@github.com/{repo_path}.git"
+
+
+# ----------------------------
 # STEP 1: CLONE REPO
 # ----------------------------
 def clone_repo():
-    repo_url = f"https://github.com/{REPO}.git"
+    repo_url = build_repo_url(REPO)
     path = "/tmp/repo"
 
     subprocess.run(["git", "clone", repo_url, path], check=True)
@@ -35,7 +106,6 @@ def clone_repo():
 # Replace this with OpenAI API call later
 # ----------------------------
 def run_codex(prompt, repo_path):
-
     file_path = f"{repo_path}/generated.py"
 
     code = f'''"""
@@ -47,7 +117,7 @@ def hello():
     print("Hello from Codex agent!")
 '''
 
-    with open(file_path, "w") as f:
+    with open(file_path, "w", encoding="utf-8") as f:
         f.write(code)
 
     return file_path
@@ -57,17 +127,31 @@ def hello():
 # STEP 3: COMMIT + PUSH
 # ----------------------------
 def commit_changes(repo_path):
-
     branch = f"agent/{SESSION_ID}"
+    repo_url = build_repo_url(REPO)
+
+    subprocess.run(
+        ["git", "config", "--global", "user.email", "codex-bot@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "--global", "user.name", "Codex Bot"],
+        check=True,
+    )
 
     subprocess.run(["git", "checkout", "-b", branch], cwd=repo_path, check=True)
-
     subprocess.run(["git", "add", "."], cwd=repo_path, check=True)
-
     subprocess.run(
         ["git", "commit", "-m", f"Codex changes for session {SESSION_ID}"],
         cwd=repo_path,
-        check=True
+        check=True,
+    )
+
+    # Ensure origin uses the GitHub App token, not anonymous HTTPS
+    subprocess.run(
+        ["git", "remote", "set-url", "origin", repo_url],
+        cwd=repo_path,
+        check=True,
     )
 
     subprocess.run(["git", "push", "origin", branch], cwd=repo_path, check=True)
@@ -79,19 +163,19 @@ def commit_changes(repo_path):
 # STEP 4: WRITE RESULT TO S3
 # ----------------------------
 def write_result(branch):
-
     result = {
         "sessionId": SESSION_ID,
         "repo": REPO,
         "branch": branch,
         "status": "COMPLETED",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
     s3.put_object(
         Bucket=S3_BUCKET,
         Key=f"{SESSION_ID}/result.json",
-        Body=json.dumps(result)
+        Body=json.dumps(result).encode("utf-8"),
+        ContentType="application/json",
     )
 
 
@@ -99,18 +183,14 @@ def write_result(branch):
 # MAIN EXECUTION
 # ----------------------------
 def main():
-
     print("Starting agent...")
     print("Session:", SESSION_ID)
     print("Repo:", REPO)
     print("Prompt:", PROMPT)
 
     repo_path = clone_repo()
-
     run_codex(PROMPT, repo_path)
-
     branch = commit_changes(repo_path)
-
     write_result(branch)
 
     print("Agent completed successfully.")
