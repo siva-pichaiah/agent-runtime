@@ -1,12 +1,9 @@
 import os
 import json
-import time
 import subprocess
 from datetime import datetime, timezone
 
 import boto3
-import jwt
-import requests
 
 # ----------------------------
 # ENV VARS FROM ECS
@@ -24,6 +21,7 @@ GITHUB_USER_TOKEN = os.environ["GITHUB_USER_TOKEN"]
 # ----------------------------
 s3 = boto3.client("s3")
 
+
 # ----------------------------
 # CODEx AUTH.JSON HANDOFF
 # ----------------------------
@@ -35,6 +33,7 @@ def ensure_codex_auth_file():
 
     codex_dir = os.path.join(os.path.expanduser("~"), ".codex")
     os.makedirs(codex_dir, mode=0o700, exist_ok=True)
+
     try:
         os.chmod(codex_dir, 0o700)
     except PermissionError:
@@ -49,8 +48,9 @@ def ensure_codex_auth_file():
     except PermissionError:
         pass
 
+
 # ----------------------------
-# GITHUB APP AUTH
+# GITHUB HELPERS
 # ----------------------------
 def normalize_repo(repo: str) -> str:
     repo = repo.strip()
@@ -64,53 +64,9 @@ def normalize_repo(repo: str) -> str:
     return repo.lstrip("/")
 
 
-
-def create_github_jwt() -> str:
-    now = int(time.time())
-    payload = {
-        "iat": now - 60,
-        "exp": now + 600,
-        "iss": str(GITHUB_APP_ID),
-    }
-
-    token = jwt.encode(
-        payload,
-        GITHUB_APP_PRIVATE_KEY,
-        algorithm="RS256",
-    )
-
-    if isinstance(token, bytes):
-        token = token.decode("utf-8")
-
-    return token
-
-
-def get_installation_token() -> str:
-    app_jwt = create_github_jwt()
-
-    url = (
-        f"https://api.github.com/app/installations/"
-        f"{GITHUB_INSTALLATION_ID}/access_tokens"
-    )
-
-    response = requests.post(
-        url,
-        headers={
-            "Authorization": f"Bearer {app_jwt}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-        timeout=30,
-    )
-    response.raise_for_status()
-
-    return response.json()["token"]
-
-
 def build_repo_url(repo: str) -> str:
     repo_path = normalize_repo(repo)
-    token = get_installation_token()
-    return f"https://x-access-token:{token}@github.com/{repo_path}.git"
+    return f"https://x-access-token:{GITHUB_USER_TOKEN}@github.com/{repo_path}.git"
 
 
 # ----------------------------
@@ -171,7 +127,7 @@ def commit_changes(repo_path):
         check=True,
     )
 
-    # Ensure origin uses the GitHub App token, not anonymous HTTPS
+    # Ensure origin uses the authenticated GitHub user token
     subprocess.run(
         ["git", "remote", "set-url", "origin", repo_url],
         cwd=repo_path,
