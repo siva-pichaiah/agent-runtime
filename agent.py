@@ -20,13 +20,16 @@ GITHUB_USER_TOKEN = os.environ["GITHUB_USER_TOKEN"]
 # AWS CLIENTS
 # ----------------------------
 s3 = boto3.client("s3")
-
+ddb = boto3.resource("dynamodb")
+table = ddb.Table(os.environ["TABLE"])
 
 # ----------------------------
 # CODEx AUTH.JSON HANDOFF
 # ----------------------------
 def ensure_codex_auth_file():
     if not CODEX_AUTH_JSON:
+        update_status("FAILED", "CODEX_AUTH_JSON_MISSING", "Codex Auth json is missing")
+
         raise RuntimeError(
             "CODEX_AUTH_JSON was not provided. Add the Codex auth.json secret to ECS."
         )
@@ -69,12 +72,37 @@ def build_repo_url(repo: str) -> str:
     return f"https://x-access-token:{GITHUB_USER_TOKEN}@github.com/{repo_path}.git"
 
 
+def update_status(status, phase=None, summary=None):
+    expr = ["#s = :s", "updatedAt = :u"]
+    names = {"#s": "status"}
+    values = {
+        ":s": status,
+        ":u": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if phase is not None:
+        expr.append("phase = :p")
+        values[":p"] = phase
+
+    if summary is not None:
+        expr.append("summary = :m")
+        values[":m"] = summary
+
+    table.update_item(
+        Key={"sessionId": SESSION_ID},
+        UpdateExpression="SET " + ", ".join(expr),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
+
 # ----------------------------
 # STEP 1: CLONE REPO
 # ----------------------------
 def clone_repo():
     repo_url = build_repo_url(REPO)
     path = "/tmp/repo"
+
+    update_status("RUNNING", "CLONING_REPO", "Cloning target repository")
 
     subprocess.run(["git", "clone", repo_url, path], check=True)
 
@@ -86,6 +114,8 @@ def clone_repo():
 # ----------------------------
 def run_codex(prompt, repo_path):
     ensure_codex_auth_file()
+
+    update_status("RUNNING", "RUNNING_CODEX", "Codex is processing the prompt")
 
     result = subprocess.run(
         [
@@ -107,6 +137,23 @@ def run_codex(prompt, repo_path):
         print(result.stderr)
 
     return result
+
+def write_codex_output(result):
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{SESSION_ID}/codex-stdout.txt",
+        Body=(result.stdout or "").encode("utf-8"),
+        ContentType="text/plain",
+    )
+
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{SESSION_ID}/codex-stderr.txt",
+        Body=(result.stderr or "").encode("utf-8"),
+        ContentType="text/plain",
+    )
+
+    update_status("COMPLETED", "DONE", "Results written to S3")
 
 
 # ----------------------------
@@ -175,7 +222,9 @@ def main():
     print("Prompt:", PROMPT)
 
     repo_path = clone_repo()
-    run_codex(PROMPT, repo_path)
+    result = run_codex(PROMPT, repo_path)
+    write_codex_output(result)
+
     branch = commit_changes(repo_path)
     write_result(branch)
 
