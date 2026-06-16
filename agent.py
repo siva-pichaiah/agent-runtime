@@ -71,7 +71,9 @@ def build_repo_url(repo: str) -> str:
     repo_path = normalize_repo(repo)
     return f"https://x-access-token:{GITHUB_USER_TOKEN}@github.com/{repo_path}.git"
 
-
+# ----------------------------
+# UPDATE STATUS HELPER
+# ----------------------------
 def update_status(status, phase=None, summary=None):
     expr = ["#s = :s", "updatedAt = :u"]
     names = {"#s": "status"}
