@@ -16,9 +16,6 @@ REPO = os.environ["REPO"]  # accepts "owner/repo" or "https://github.com/owner/r
 PROMPT = os.environ["PROMPT"]
 S3_BUCKET = os.environ["S3_BUCKET"]
 
-GITHUB_APP_ID = os.environ["GITHUB_APP_ID"]
-GITHUB_INSTALLATION_ID = os.environ["GITHUB_INSTALLATION_ID"]
-GITHUB_APP_PRIVATE_KEY = os.environ["GITHUB_APP_PRIVATE_KEY"]
 CODEX_AUTH_JSON = os.environ.get("CODEX_AUTH_JSON")
 GITHUB_USER_TOKEN = os.environ["GITHUB_USER_TOKEN"]
 
