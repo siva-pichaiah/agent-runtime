@@ -208,11 +208,12 @@ def commit_changes(repo_path):
 # ----------------------------
 # STEP 4: WRITE RESULT TO S3
 # ----------------------------
-def write_result(branch):
+def write_result(branch, changed):
     result = {
         "sessionId": SESSION_ID,
         "repo": REPO,
         "branch": branch,
+        "changed": changed,
         "status": "COMPLETED",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -220,7 +221,7 @@ def write_result(branch):
     s3.put_object(
         Bucket=S3_BUCKET,
         Key=f"{SESSION_ID}/result.json",
-        Body=json.dumps(result).encode("utf-8"),
+        Body=json.dumps(result, indent=2).encode("utf-8"),
         ContentType="application/json",
     )
 
