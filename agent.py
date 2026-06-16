@@ -102,8 +102,6 @@ def clone_repo():
     repo_url = build_repo_url(REPO)
     path = "/tmp/repo"
 
-    update_status("RUNNING", "CLONING_REPO", "Cloning target repository")
-
     subprocess.run(["git", "clone", repo_url, path], check=True)
 
     return path
@@ -114,8 +112,6 @@ def clone_repo():
 # ----------------------------
 def run_codex(prompt, repo_path):
     ensure_codex_auth_file()
-
-    update_status("RUNNING", "RUNNING_CODEX", "Codex is processing the prompt")
 
     result = subprocess.run(
         [
@@ -153,15 +149,12 @@ def write_codex_output(result):
         ContentType="text/plain",
     )
 
-    update_status("COMPLETED", "DONE", "Results written to S3")
-
 
 # ----------------------------
 # STEP 3: COMMIT + PUSH
 # ----------------------------
 def commit_changes(repo_path):
     branch = f"agent/{SESSION_ID}"
-    repo_url = build_repo_url(REPO)
 
     subprocess.run(
         ["git", "config", "--global", "user.email", "codex-bot@example.com"],
@@ -173,6 +166,22 @@ def commit_changes(repo_path):
     )
 
     subprocess.run(["git", "checkout", "-b", branch], cwd=repo_path, check=True)
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_path,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    if not status.stdout.strip():
+        print("No file changes detected; skipping git commit and push.")
+        return {
+            "branch": branch,
+            "changed": False,
+        }
+
     subprocess.run(["git", "add", "."], cwd=repo_path, check=True)
     subprocess.run(
         ["git", "commit", "-m", f"Codex changes for session {SESSION_ID}"],
@@ -180,16 +189,18 @@ def commit_changes(repo_path):
         check=True,
     )
 
-    # Ensure origin uses the authenticated GitHub user token
+    repo_url = build_repo_url(REPO)
     subprocess.run(
         ["git", "remote", "set-url", "origin", repo_url],
         cwd=repo_path,
         check=True,
     )
-
     subprocess.run(["git", "push", "origin", branch], cwd=repo_path, check=True)
 
-    return branch
+    return {
+        "branch": branch,
+        "changed": True,
+    }
 
 
 # ----------------------------
@@ -221,13 +232,33 @@ def main():
     print("Repo:", REPO)
     print("Prompt:", PROMPT)
 
+    update_status("RUNNING", "CLONING_REPO", "Cloning repository")
+
     repo_path = clone_repo()
-    result = run_codex(PROMPT, repo_path)
-    write_codex_output(result)
 
-    branch = commit_changes(repo_path)
-    write_result(branch)
+    update_status("RUNNING", "RUNNING_CODEX", "Running Codex")
+    codex_result = run_codex(PROMPT, repo_path)
 
+    update_status("RUNNING", "CHECKING_CHANGES", "Checking for file changes")
+    commit_result = commit_changes(repo_path)
+
+    if commit_result["changed"]:
+        update_status(
+            "RUNNING",
+            "PUSHING_CHANGES",
+            f"Pushed branch {commit_result['branch']}",
+        )
+    else:
+        update_status(
+            "RUNNING",
+            "NO_CHANGES",
+            "Codex completed with no file changes",
+        )
+
+    write_codex_output(codex_result)
+    write_result(commit_result["branch"], commit_result["changed"])
+
+    update_status("COMPLETED", "DONE", "Session completed successfully")
     print("Agent completed successfully.")
 
 
