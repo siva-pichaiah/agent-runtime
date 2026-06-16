@@ -88,7 +88,13 @@ def run_codex(prompt, repo_path):
     ensure_codex_auth_file()
 
     result = subprocess.run(
-        ["codex", "exec", "--skip-git-repo-check", prompt],
+        [
+          "codex",
+          "exec",
+          "--skip-git-repo-check",
+          "--dangerously-bypass-approvals-and-sandbox",
+          prompt
+        ],
         cwd=repo_path,
         check=True,
         text=True,
